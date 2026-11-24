@@ -263,6 +263,7 @@ def cross_validate_training(
         cv=StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=seed),
         refit=False,
         n_jobs=1,
+        verbose=2,
         return_train_score=False,
         error_score="raise",
     )
@@ -876,7 +877,13 @@ def run_experiment(
             f"{transitions_path} already exists. Use --overwrite only if replacing it is intentional."
         )
 
+    print(f"[1/5] Loading prepared train/validation splits from {root}", flush=True)
     train, validation, split_fingerprint, source = load_experiment_data(root)
+    print(
+        f"[2/5] Loaded {len(train):,} training and {len(validation):,} validation rows; "
+        "verifying the saved baseline.",
+        flush=True,
+    )
     baseline_model, baseline_probabilities, baseline_info, baseline_paths, baseline_before = (
         load_and_verify_baseline(root, validation, split_fingerprint)
     )
@@ -894,17 +901,29 @@ def run_experiment(
             )
     del baseline_model
 
-    cv_tables = [
-        cross_validate_training(
-            train,
-            feature,
-            c_values=tuple(c_values),
-            class_weights=tuple(class_weights),
-            cv_folds=cv_folds,
-            seed=SEED,
+    print(
+        f"[3/5] Baseline verified. Starting {len(feature_names)} feature searches; "
+        f"each has {len(c_values) * len(class_weights)} candidates and {cv_folds} CV folds.",
+        flush=True,
+    )
+    cv_tables = []
+    for feature_index, feature in enumerate(feature_names, start=1):
+        print(
+            f"[CV {feature_index}/{len(feature_names)}] Starting {feature}. "
+            "Per-fold progress follows.",
+            flush=True,
         )
-        for feature in feature_names
-    ]
+        cv_tables.append(
+            cross_validate_training(
+                train,
+                feature,
+                c_values=tuple(c_values),
+                class_weights=tuple(class_weights),
+                cv_folds=cv_folds,
+                seed=SEED,
+            )
+        )
+        print(f"[CV {feature_index}/{len(feature_names)}] Finished {feature}.", flush=True)
     cv_results = rank_cv_results(pd.concat(cv_tables, ignore_index=True), feature_names)
     selected = cv_results.iloc[0].to_dict()
     feature_order = {name: index for index, name in enumerate(feature_names)}
@@ -932,6 +951,11 @@ def run_experiment(
     selected_feature = str(selected["feature_variant"])
     selected_c = float(selected["C"])
     selected_weight = _class_weight_value(selected["class_weight"])
+    print(
+        f"[4/5] CV complete. Selected {selected_feature}, C={selected_c:g}, "
+        f"class_weight={selected_weight!r}; evaluating validation candidates.",
+        flush=True,
+    )
 
     x_validation = validation["text"].to_numpy(dtype=str)
     validation_rows = [
@@ -948,7 +972,13 @@ def run_experiment(
     ]
     optimized_model = None
     optimized_probabilities = None
-    for row in feature_winners.to_dict(orient="records"):
+    validation_candidates = feature_winners.to_dict(orient="records")
+    for candidate_index, row in enumerate(validation_candidates, start=1):
+        print(
+            f"[Validation {candidate_index}/{len(validation_candidates)}] Fitting "
+            f"{row['feature_variant']} candidate.",
+            flush=True,
+        )
         class_weight = _class_weight_value(row["class_weight"])
         candidate = make_calibrated_estimator(
             str(row["feature_variant"]),
@@ -1026,6 +1056,10 @@ def run_experiment(
     if baseline_file_hashes_after != baseline_before:
         raise RuntimeError("An original tfidf_svm baseline artifact changed during optimization.")
 
+    print(
+        f"[5/5] Computing paired bootstrap ({bootstrap_repeats:,} resamples) and writing reports.",
+        flush=True,
+    )
     bootstrap, bootstrap_differences = _paired_bootstrap(
         validation_labels,
         baseline_predictions,
@@ -1255,13 +1289,17 @@ def run_experiment(
     if baseline_final != baseline_before:
         raise RuntimeError("An original tfidf_svm baseline artifact changed during optimization.")
 
-    print(f"Optimization experiment complete: {output_dir}")
-    print(f"Selected by CV: {selected_feature}, C={selected_c:g}, class_weight={selected_weight!r}")
+    print(f"Optimization experiment complete: {output_dir}", flush=True)
+    print(
+        f"Selected by CV: {selected_feature}, C={selected_c:g}, class_weight={selected_weight!r}",
+        flush=True,
+    )
     print(
         f"Validation macro-F1: baseline={baseline_metrics['macro_f1']:.4f}, "
-        f"optimized={optimized_metrics['macro_f1']:.4f}"
+        f"optimized={optimized_metrics['macro_f1']:.4f}",
+        flush=True,
     )
-    print(f"Test split read: no; FINALIZE: False")
+    print("Test split read: no; FINALIZE: False", flush=True)
     return report
 
 

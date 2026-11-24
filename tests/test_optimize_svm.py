@@ -40,6 +40,7 @@ class SvmOptimizationTests(unittest.TestCase):
             def __init__(self, estimator, param_grid, scoring, cv, **kwargs):
                 captured["estimator"] = estimator
                 captured["cv"] = cv
+                captured["verbose"] = kwargs.get("verbose")
                 self.param_grid = param_grid
 
             def fit(self, x, y):
@@ -70,6 +71,7 @@ class SvmOptimizationTests(unittest.TestCase):
 
         self.assertEqual(captured["x"], self.train.text.tolist())
         self.assertEqual(captured["y"], self.train.label.tolist())
+        self.assertEqual(captured["verbose"], 2)
         self.assertFalse(any("VALIDATION_ONLY" in text for text in captured["x"]))
         self.assertFalse(any("TEST_ONLY" in text for text in captured["x"]))
         self.assertEqual(captured["cv"].random_state, optimization.SEED)
