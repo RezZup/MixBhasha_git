@@ -1,0 +1,35 @@
+{
+  "scope": "Purposively sampled TF-IDF SVM validation misclassifications; not a random dataset sample",
+  "n_reviewed": 60,
+  "per_original_class": {
+    "abusive": 20,
+    "mockery": 20,
+    "offensive": 20
+  },
+  "error_reason_counts": {
+    "category_confusion": 27,
+    "slang": 19,
+    "sarcasm": 7,
+    "context": 4,
+    "other": 2,
+    "spelling": 1
+  },
+  "suspected_original_label_counts": {
+    "yes": 27,
+    "unclear": 21,
+    "no": 12
+  },
+  "other_models_correct_on_svm_errors": {
+    "hing_roberta_mixed": 20,
+    "bilstm_attention": 19,
+    "both": 9,
+    "either": 30,
+    "neither": 30
+  },
+  "cautions": [
+    "Suspected-label flags are not adjudicated truths or dataset-wide label-noise estimates.",
+    "Evaluation examples are validation cases used for exploratory error diagnosis only.",
+    "Do not train on/relabel these examples while continuing to claim comparable validation scores.",
+    "Model-rescue counts do not imply a realizable ensemble gain."
+  ]
+}

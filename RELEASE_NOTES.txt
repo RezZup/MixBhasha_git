@@ -1,0 +1,5 @@
+Generated source-only GitHub distribution.
+No full datasets, model checkpoints, private review examples, credentials or raw predictions included.
+The validation reports are *not* held-out leaderboard claims.
+Run locally or in Colab to generate your own weights.
+Upstream dataset/model licenses are NOT replaced by this source-code license.

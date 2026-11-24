@@ -1,0 +1,38 @@
+# Credentials and local configuration
+.env
+.env.*
+*.key
+*.pem
+*.secret
+credentials.json
+token.json
+
+# Python / notebooks
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+
+# EXPERIMENT DATA — DO NOT PUBLISH WITHOUT RIGHTS / CONSENT
+data/
+models/
+private_analysis/
+checkpoints/
+run_outputs/
+*.safetensors
+*.pt
+*.pth
+*.joblib
+*.npz
+*.bin
+*_PRIVATE.csv
+*PRIVATE.zip
+
+# Large auto-generated artifacts / local backups
+*.zip
+reports/*
+!reports/public_validation/
+results/
