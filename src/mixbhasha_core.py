@@ -404,11 +404,14 @@ def prepare(root,tasks=('sentiment','cyberbullying7'),offense_source='mc',hasoc_
     audit_file.write_text(json.dumps(previous,indent=2,ensure_ascii=False),encoding='utf8')
     return all_data,report
 
-def load_prepared(root,tasks):
+def load_prepared(root,tasks,splits=('train','val','test')):
     root=Path(root)
+    allowed={'train','val','test'}
+    invalid=set(splits)-allowed
+    if invalid:raise ValueError(f'Unsupported prepared splits: {sorted(invalid)}')
     data={}
     for task in tasks:
-        data[task]={s:pd.read_csv(root/'data'/f'{task}_{s}.csv').fillna({'text':''}) for s in ['train','val','test']}
+        data[task]={s:pd.read_csv(root/'data'/f'{task}_{s}.csv').fillna({'text':''}) for s in splits}
         for s in data[task]:data[task][s]['label']=data[task][s]['label'].astype(int)
     return data
 

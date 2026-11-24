@@ -53,6 +53,18 @@ class V5RegressionTests(unittest.TestCase):
         self.assertGreaterEqual(audit['conflicting_rows_removed'],2)
         self.assertNotIn(z.text.iloc[0],clean.text.tolist())
 
+    def test_load_prepared_can_exclude_holdout_splits(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'data').mkdir()
+            pd.DataFrame({'text':['training example'],'label':[0]}).to_csv(
+                root/'data'/'cyberbullying7_train.csv',index=False)
+            for split in ('val','test'):
+                (root/'data'/f'cyberbullying7_{split}.csv').write_text(
+                    'text,label\nholdout example,not-a-label\n',encoding='utf8')
+            loaded=m.load_prepared(root,['cyberbullying7'],splits=('train',))
+            self.assertEqual(list(loaded['cyberbullying7']),['train'])
+            self.assertEqual(loaded['cyberbullying7']['train'].label.tolist(),[0])
+
     def test_ensemble_validation_only(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);m.output_paths(root)
