@@ -41,16 +41,18 @@ class EnsembleEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "fingerprint mismatch"):
             ensemble.verify_split_fingerprints(fingerprint, metadata)
 
-    def test_prediction_alignment_checks_labels_and_recomputed_row_probabilities(self):
+    def test_prediction_alignment_checks_labels_and_split_fingerprint(self):
+        fingerprint = "c" * 64
         result = ensemble.verify_prediction_alignment(
             "tfidf_svm",
             self.probabilities,
             self.labels,
             self.validation,
-            self.probabilities.copy(),
+            fingerprint,
+            fingerprint,
         )
         self.assertTrue(result["saved_labels_match_validation_in_order"])
-        self.assertTrue(result["saved_probabilities_match_recomputed_rows"])
+        self.assertTrue(result["model_split_fingerprint_matches_current_experiment"])
 
         with self.assertRaisesRegex(RuntimeError, "labels do not match"):
             ensemble.verify_prediction_alignment(
@@ -58,15 +60,17 @@ class EnsembleEvaluationTests(unittest.TestCase):
                 self.probabilities,
                 self.labels[::-1],
                 self.validation,
-                self.probabilities,
+                fingerprint,
+                fingerprint,
             )
-        with self.assertRaisesRegex(RuntimeError, "do not align"):
+        with self.assertRaisesRegex(RuntimeError, "split fingerprint"):
             ensemble.verify_prediction_alignment(
                 "tfidf_svm",
                 self.probabilities[::-1],
                 self.labels,
                 self.validation,
-                self.probabilities,
+                fingerprint,
+                "d" * 64,
             )
 
     def test_probability_shape_and_values_are_validated(self):

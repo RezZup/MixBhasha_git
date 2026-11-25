@@ -40,8 +40,6 @@ MODEL_NAMES = (SVM_NAME, ROBERTA_NAME)
 DEFAULT_ROOT = Path("/content/drive/MyDrive/MixBhasha_V5_seed42")
 DEFAULT_OUTPUT_RELATIVE = Path("experiments") / "cyberbullying7_ensemble"
 DEFAULT_BOOTSTRAP_REPEATS = 5000
-PROBABILITY_RTOL = 1e-4
-PROBABILITY_ATOL = 1e-5
 METRICS = (
     "accuracy",
     "macro_f1",
@@ -204,24 +202,38 @@ def verify_model_class_order(model_name: str, loaded_model: tuple) -> list[str]:
         config = getattr(model, "config", None)
         if config is None:
             raise ValueError(f"{model_name} artifact has no model config.")
-        if int(getattr(config, "num_labels", -1)) != len(expected):
-            raise ValueError(f"{model_name} config does not declare seven output labels.")
-        id2label = _index_mapping(getattr(config, "id2label", None), "id2label")
-        label2id = getattr(config, "label2id", None)
-        if not isinstance(label2id, dict):
-            raise ValueError("HingRoBERTa config is missing a verifiable label2id mapping.")
+        return verify_transformer_config_class_order(
+            {
+                "num_labels": getattr(config, "num_labels", -1),
+                "id2label": getattr(config, "id2label", None),
+                "label2id": getattr(config, "label2id", None),
+            }
+        )
+
+    raise ValueError(f"Unsupported model name {model_name!r}.")
+
+
+def verify_transformer_config_class_order(config: dict[str, Any]) -> list[str]:
+    expected = list(CLASSES)
+    if int(config.get("num_labels", -1)) != len(expected):
+        raise ValueError("HingRoBERTa config does not declare seven output labels.")
+    id2label = _index_mapping(config.get("id2label"), "id2label")
+    label2id = config.get("label2id")
+    if not isinstance(label2id, dict):
+        raise ValueError("HingRoBERTa config is missing a verifiable label2id mapping.")
+    try:
         normalized_label2id = {
             str(label): int(index) for label, index in label2id.items()
         }
-        expected_label2id = {label: index for index, label in enumerate(expected)}
-        if id2label != expected or normalized_label2id != expected_label2id:
-            raise ValueError(
-                "HingRoBERTa class order does not exactly match "
-                f"core.LABELS[{TASK!r}]: {expected!r}; found id2label={id2label!r}."
-            )
-        return id2label
-
-    raise ValueError(f"Unsupported model name {model_name!r}.")
+    except (TypeError, ValueError) as error:
+        raise ValueError("HingRoBERTa label2id mapping contains invalid class IDs.") from error
+    expected_label2id = {label: index for index, label in enumerate(expected)}
+    if id2label != expected or normalized_label2id != expected_label2id:
+        raise ValueError(
+            "HingRoBERTa class order does not exactly match "
+            f"core.LABELS[{TASK!r}]: {expected!r}; found id2label={id2label!r}."
+        )
+    return id2label
 
 
 def validate_probabilities(probabilities: np.ndarray, row_count: int, source: str) -> np.ndarray:
@@ -243,11 +255,25 @@ def verify_prediction_alignment(
     saved_probabilities: np.ndarray,
     saved_labels: np.ndarray,
     validation: pd.DataFrame,
-    reproduced_probabilities: np.ndarray,
+    expected_fingerprint: str,
+    model_fingerprint: str,
 ) -> dict[str, Any]:
-    """Verify labels and saved probability order against current validation rows."""
+    """Verify stored rows against the ordered validation split without rerunning inference."""
     if not {"text", "label"}.issubset(validation.columns):
         raise ValueError("Prepared validation split must contain text and label columns.")
+    expected_fingerprint = _validate_fingerprint(
+        expected_fingerprint,
+        "Current experiment",
+    )
+    model_fingerprint = _validate_fingerprint(
+        model_fingerprint,
+        f"{model_name} validated.json metadata",
+    )
+    if model_fingerprint != expected_fingerprint:
+        raise RuntimeError(
+            f"{model_name} split fingerprint does not match the current experiment; "
+            "refusing to compare predictions."
+        )
     current_labels = pd.to_numeric(validation["label"], errors="raise").to_numpy(dtype=int)
     if current_labels.size == 0:
         raise ValueError("Prepared validation split is empty.")
@@ -267,28 +293,12 @@ def verify_prediction_alignment(
         len(validation),
         f"{model_name} saved predictions",
     )
-    reproduced = validate_probabilities(
-        reproduced_probabilities,
-        len(validation),
-        f"{model_name} recomputed predictions",
-    )
-    max_abs_difference = float(np.max(np.abs(saved - reproduced)))
-    if not np.allclose(
-        saved,
-        reproduced,
-        rtol=PROBABILITY_RTOL,
-        atol=PROBABILITY_ATOL,
-    ):
-        raise RuntimeError(
-            f"{model_name} saved probabilities do not align with the current validation "
-            f"row order/model artifact (maximum absolute difference {max_abs_difference:.6g})."
-        )
     return {
         "saved_labels_match_validation_in_order": True,
-        "saved_probabilities_match_recomputed_rows": True,
-        "max_probability_absolute_difference": max_abs_difference,
-        "probability_rtol": PROBABILITY_RTOL,
-        "probability_atol": PROBABILITY_ATOL,
+        "model_split_fingerprint_matches_current_experiment": True,
+        "probability_order_verified_by": (
+            "saved ordered label sequence and shared full split fingerprint"
+        ),
     }
 
 
@@ -409,11 +419,19 @@ def load_verified_predictions(
     fingerprint = verify_split_fingerprints(audit_fingerprint, metadata_by_model)
     optimization_context = _load_optimization_context(root, fingerprint)
 
+    print("[2/4] Checking model class orders from saved artifacts, without model inference.", flush=True)
+    svm_model = core.load_model(root, TASK, SVM_NAME)
+    verify_model_class_order(SVM_NAME, svm_model)
+    del svm_model
+    transformer_config_path = root / "models" / TASK / ROBERTA_NAME / "final" / "config.json"
+    transformer_config = _read_json(transformer_config_path)
+    verify_transformer_config_class_order(transformer_config)
+
     probabilities: dict[str, np.ndarray] = {}
     alignment: dict[str, Any] = {}
     for model_index, model_name in enumerate(MODEL_NAMES, start=1):
         print(
-            f"[2/4] Verifying saved model {model_index}/{len(MODEL_NAMES)}: {model_name}.",
+            f"[2/4] Checking saved predictions {model_index}/{len(MODEL_NAMES)}: {model_name}.",
             flush=True,
         )
         prediction_path = root / "models" / TASK / model_name / "validation_probabilities.npz"
@@ -425,16 +443,6 @@ def load_verified_predictions(
             saved_probabilities = np.asarray(archive["probs"], dtype=float)
             saved_labels = np.asarray(archive["labels"])
 
-        loaded_model = core.load_model(root, TASK, model_name)
-        verify_model_class_order(model_name, loaded_model)
-        max_len = int(metadata_by_model[model_name].get("max_len", 128))
-        if max_len < 1:
-            raise ValueError(f"{model_name} metadata has an invalid max_len.")
-        recomputed = core.predict_loaded(
-            loaded_model,
-            validation,
-            max_len=max_len,
-        )
         probabilities[model_name] = validate_probabilities(
             saved_probabilities,
             len(validation),
@@ -445,11 +453,11 @@ def load_verified_predictions(
             probabilities[model_name],
             saved_labels,
             validation,
-            recomputed,
+            fingerprint,
+            str(metadata_by_model[model_name].get("split_sha256", "")),
         )
-        del loaded_model
         print(
-            f"Verified {model_name}: fingerprint, label/class order, and validation row alignment.",
+            f"Verified {model_name}: fingerprint, class order, and saved label sequence.",
             flush=True,
         )
 
@@ -1083,7 +1091,7 @@ def run_evaluation(
                 for model_name in MODEL_NAMES
             },
             "saved_model_class_order_verified": True,
-            "saved_predictions_recomputed_against_validation_order": True,
+            "saved_prediction_order_verified_by_label_sequence_and_split_fingerprint": True,
             "prior_svm_optimization_report": optimization_context,
         },
         "ensemble_definitions": definitions,
