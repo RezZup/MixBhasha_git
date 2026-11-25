@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys,tempfile,unittest,json
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 import numpy as np,pandas as pd
 import mixbhasha_core as m
@@ -64,6 +65,23 @@ class V5RegressionTests(unittest.TestCase):
             loaded=m.load_prepared(root,['cyberbullying7'],splits=('train',))
             self.assertEqual(list(loaded['cyberbullying7']),['train'])
             self.assertEqual(loaded['cyberbullying7']['train'].label.tolist(),[0])
+
+    def test_prepare_refuses_to_replace_data_when_model_fingerprint_differs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            frames={
+                'train':self.mc(),
+                'val':self.mc().iloc[:14].reset_index(drop=True),
+                'test':self.mc().iloc[14:28].reset_index(drop=True)}
+            model_dir=root/'models'/'cyberbullying7'/'tfidf_svm'
+            model_dir.mkdir(parents=True)
+            (model_dir/'meta.json').write_text(json.dumps({
+                'task':'cyberbullying7','split_sha256':'a'*64}),encoding='utf8')
+            with patch.object(m,'load_task',return_value=(
+                    frames,'synthetic regression fixture',{})):
+                with self.assertRaisesRegex(RuntimeError,'model metadata'):
+                    m.prepare(root,tasks=['cyberbullying7'])
+            self.assertFalse((root/'data'/'cyberbullying7_train.csv').exists())
 
     def test_ensemble_validation_only(self):
         with tempfile.TemporaryDirectory() as td:

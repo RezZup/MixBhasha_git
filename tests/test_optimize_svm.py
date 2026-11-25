@@ -207,6 +207,17 @@ class SvmOptimizationTests(unittest.TestCase):
                     validation["label"].tolist(),
                 )
 
+            with patch.object(
+                optimization,
+                "cross_validate_training",
+                side_effect=AssertionError("cached experiment should not repeat CV"),
+            ):
+                cached_report = optimization.run_experiment(root, **kwargs)
+            self.assertEqual(
+                cached_report["reproducibility"]["stored_project_split_sha256"],
+                report["reproducibility"]["stored_project_split_sha256"],
+            )
+
             optimization.run_experiment(root, overwrite=True, **kwargs)
             self.assertEqual(first_cv, (output_dir / "cv_results.csv").read_bytes())
             self.assertEqual(

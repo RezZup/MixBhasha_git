@@ -6,6 +6,7 @@ import argparse
 import json
 import platform
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,15 @@ OUTPUT_FILENAMES = {
         for name in FIGURE_NAMES
         for extension in ("png", "svg")
     ),
+}
+REUSE_REQUIRED_OUTPUTS = {
+    "ensemble_report.json",
+    "ensemble_report.md",
+    "ensemble_comparison.csv",
+    "per_class_ensemble_comparison.csv",
+    "model_agreement.json",
+    *(f"{name}.png" for name in FIGURE_NAMES),
+    *(f"{name}.svg" for name in FIGURE_NAMES),
 }
 
 
@@ -771,6 +781,56 @@ def _check_output_directory(output_dir: Path, overwrite: bool) -> None:
         )
 
 
+def _reuse_completed_evaluation(root: Path, output_dir: Path) -> dict[str, Any] | None:
+    report_path = output_dir / "ensemble_report.json"
+    if not output_dir.exists() or not any(output_dir.iterdir()):
+        return None
+    missing = sorted(
+        name for name in REUSE_REQUIRED_OUTPUTS if not (output_dir / name).is_file()
+    )
+    if missing:
+        raise FileExistsError(
+            f"{output_dir} contains incomplete ensemble outputs (missing {missing}). "
+            "Use overwrite=True only if you intentionally want to replace them."
+        )
+    report = _read_json(report_path)
+    if report.get("task") != TASK:
+        raise RuntimeError(f"{report_path} does not describe task {TASK!r}.")
+    audit_path = root / "results" / "data_audit.json"
+    audit = _read_json(audit_path)
+    task_audit = audit.get(TASK)
+    if not isinstance(task_audit, dict):
+        raise ValueError(f"{audit_path} has no {TASK!r} entry.")
+    fingerprint = _validate_fingerprint(
+        task_audit.get("split_sha256"),
+        f"{audit_path} {TASK}",
+    )
+    report_fingerprint = _validate_fingerprint(
+        report.get("reproducibility", {}).get("stored_project_split_sha256"),
+        f"{report_path} reproducibility",
+    )
+    if report_fingerprint != fingerprint:
+        raise RuntimeError(
+            "Existing ensemble outputs use a different dataset fingerprint. "
+            "Refusing to reuse stale results."
+        )
+    metadata_by_model = {}
+    for model_name in MODEL_NAMES:
+        metadata_path = root / "models" / TASK / model_name / "validated.json"
+        if not metadata_path.is_file():
+            raise FileNotFoundError(f"Missing model metadata required to reuse outputs: {metadata_path}")
+        metadata_by_model[model_name] = _validate_model_metadata(
+            model_name,
+            _read_json(metadata_path),
+        )
+    verify_split_fingerprints(fingerprint, metadata_by_model)
+    print(
+        f"REUSE completed ensemble evaluation from {output_dir}; no model or metric work repeated.",
+        flush=True,
+    )
+    return report
+
+
 def _save_figure(fig: Figure, output_dir: Path, name: str) -> None:
     fig.savefig(
         output_dir / f"{name}.png",
@@ -992,10 +1052,15 @@ def run_evaluation(
     bootstrap_repeats: int = DEFAULT_BOOTSTRAP_REPEATS,
     overwrite: bool = False,
 ) -> dict[str, Any]:
+    evaluation_started = time.perf_counter()
     root = Path(root).expanduser().resolve()
     if bootstrap_repeats < 100:
         raise ValueError("Use at least 100 paired bootstrap resamples.")
     output_dir = _output_dir(root)
+    if not overwrite:
+        cached_report = _reuse_completed_evaluation(root, output_dir)
+        if cached_report is not None:
+            return cached_report
     _check_output_directory(output_dir, overwrite)
 
     validation, probabilities, alignment, fingerprint, optimization_context = (
@@ -1132,7 +1197,11 @@ def run_evaluation(
         encoding="utf-8",
     )
     _write_markdown_report(output_dir, report, metrics_frame, bootstrap_results)
-    print(f"Ensemble evaluation complete: {output_dir}", flush=True)
+    print(
+        f"Ensemble evaluation complete in {(time.perf_counter()-evaluation_started)/60:.1f} min: "
+        f"{output_dir}",
+        flush=True,
+    )
     return report
 
 

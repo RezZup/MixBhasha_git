@@ -7,6 +7,7 @@ import hashlib
 import json
 import platform
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,18 @@ OUTPUT_FILENAMES = {
     "optimized_validation_predictions.npz",
     "validation_predictions.csv",
     *(f"{name}.{extension}" for name in FIGURE_NAMES for extension in ("png", "svg")),
+}
+REUSE_REQUIRED_OUTPUTS = {
+    "cv_results.csv",
+    "best_parameters.json",
+    "validation_comparison.csv",
+    "per_class_comparison.csv",
+    "error_transition_summary.json",
+    "optimization_report.md",
+    "optimization_report.json",
+    "optimized_svm.joblib",
+    "optimized_validation_predictions.npz",
+    "validation_predictions.csv",
 }
 PRIVATE_TRANSITIONS_NAME = "cyberbullying7_svm_optimization_error_transitions_PRIVATE.csv"
 METRIC_NAMES = (
@@ -502,6 +515,54 @@ def _check_output_directory(output_dir: Path, overwrite: bool) -> None:
         )
 
 
+def _reuse_completed_experiment(
+    root: Path,
+    output_dir: Path,
+    split_fingerprint: str,
+) -> dict | None:
+    report_path = output_dir / "optimization_report.json"
+    transitions_path = root / "private_analysis" / PRIVATE_TRANSITIONS_NAME
+    if not output_dir.exists() or not any(output_dir.iterdir()):
+        return None
+    missing = sorted(
+        name for name in REUSE_REQUIRED_OUTPUTS if not (output_dir / name).is_file()
+    )
+    if missing or not transitions_path.is_file():
+        raise FileExistsError(
+            f"{output_dir} contains an incomplete prior run (missing outputs: {missing}; "
+            f"private transitions present={transitions_path.is_file()}). "
+            "Use --overwrite only if you intentionally want to replace it."
+        )
+    report = _read_json(report_path)
+    recorded_fingerprint = report.get("reproducibility", {}).get(
+        "stored_project_split_sha256"
+    )
+    if recorded_fingerprint != split_fingerprint:
+        raise RuntimeError(
+            "Existing optimization outputs use a different split fingerprint. "
+            "Refusing to reuse them; use the matching experiment root."
+        )
+    recorded_baselines = {
+        Path(item["path"]).name: item["sha256"]
+        for item in report.get("baseline_artifact_preservation", {}).get("artifacts", [])
+        if isinstance(item, dict) and {"path", "sha256"}.issubset(item)
+    }
+    current_baselines = {
+        path.name: _hash_file(path)["sha256"] for path in _baseline_artifact_paths(root)
+    }
+    if recorded_baselines != current_baselines:
+        raise RuntimeError(
+            "Saved baseline artifacts differ from those used by the existing optimization "
+            "report. Refusing to reuse or compare stale outputs."
+        )
+    print(
+        f"REUSE completed SVM optimization from {output_dir}; no CV work repeated. "
+        "Set overwrite=True only to intentionally rerun.",
+        flush=True,
+    )
+    return report
+
+
 def _paired_bootstrap(
     labels: np.ndarray,
     baseline_predictions: np.ndarray,
@@ -860,6 +921,7 @@ def run_experiment(
     bootstrap_repeats: int = DEFAULT_BOOTSTRAP_REPEATS,
     overwrite: bool = False,
 ) -> dict:
+    experiment_started = time.perf_counter()
     root = Path(root).expanduser().resolve()
     output_dir = root / DEFAULT_OUTPUT_RELATIVE
     if cv_folds < 2:
@@ -870,15 +932,23 @@ def run_experiment(
         raise ValueError(f"feature_names must be selected from {list(FEATURE_VARIANTS)}.")
     if len(set(feature_names)) != len(feature_names):
         raise ValueError("feature_names must not contain duplicates.")
-    _check_output_directory(output_dir, overwrite)
     transitions_path = root / "private_analysis" / PRIVATE_TRANSITIONS_NAME
-    if transitions_path.exists() and not overwrite:
-        raise FileExistsError(
-            f"{transitions_path} already exists. Use --overwrite only if replacing it is intentional."
-        )
-
     print(f"[1/5] Loading prepared train/validation splits from {root}", flush=True)
     train, validation, split_fingerprint, source = load_experiment_data(root)
+    if not overwrite:
+        cached_report = _reuse_completed_experiment(
+            root,
+            output_dir,
+            split_fingerprint,
+        )
+        if cached_report is not None:
+            return cached_report
+    _check_output_directory(output_dir, overwrite)
+    if transitions_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"{transitions_path} already exists without a complete optimization report. "
+            "Use --overwrite only if replacing this prior run is intentional."
+        )
     print(
         f"[2/5] Loaded {len(train):,} training and {len(validation):,} validation rows; "
         "verifying the saved baseline.",
@@ -901,6 +971,7 @@ def run_experiment(
             )
     del baseline_model
 
+    search_started = time.perf_counter()
     print(
         f"[3/5] Baseline verified. Starting {len(feature_names)} feature searches; "
         f"each has {len(c_values) * len(class_weights)} candidates and {cv_folds} CV folds.",
@@ -923,7 +994,16 @@ def run_experiment(
                 seed=SEED,
             )
         )
-        print(f"[CV {feature_index}/{len(feature_names)}] Finished {feature}.", flush=True)
+        search_elapsed = time.perf_counter() - search_started
+        estimated_remaining = (
+            search_elapsed / feature_index * (len(feature_names) - feature_index)
+        )
+        print(
+            f"[CV {feature_index}/{len(feature_names)}] Finished {feature} in "
+            f"{search_elapsed/60:.1f} min; estimated CV time remaining "
+            f"{estimated_remaining/60:.1f} min.",
+            flush=True,
+        )
     cv_results = rank_cv_results(pd.concat(cv_tables, ignore_index=True), feature_names)
     selected = cv_results.iloc[0].to_dict()
     feature_order = {name: index for index, name in enumerate(feature_names)}
@@ -1289,7 +1369,11 @@ def run_experiment(
     if baseline_final != baseline_before:
         raise RuntimeError("An original tfidf_svm baseline artifact changed during optimization.")
 
-    print(f"Optimization experiment complete: {output_dir}", flush=True)
+    print(
+        f"Optimization experiment complete in {(time.perf_counter()-experiment_started)/60:.1f} min: "
+        f"{output_dir}",
+        flush=True,
+    )
     print(
         f"Selected by CV: {selected_feature}, C={selected_c:g}, class_weight={selected_weight!r}",
         flush=True,

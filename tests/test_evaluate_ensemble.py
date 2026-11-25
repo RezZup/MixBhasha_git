@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -241,6 +242,63 @@ class EnsembleEvaluationTests(unittest.TestCase):
         self.assertEqual(per_class["label"].tolist(), ensemble.CLASSES)
         self.assertEqual(confusion.shape, (7, 7))
         self.assertTrue(np.array_equal(confusion, np.eye(7, dtype=int)))
+
+    def test_completed_ensemble_outputs_are_reused_only_for_matching_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fingerprint = "e" * 64
+            audit_dir = root / "results"
+            audit_dir.mkdir()
+            (audit_dir / "data_audit.json").write_text(
+                json.dumps(
+                    {
+                        ensemble.TASK: {
+                            "split_sha256": fingerprint,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for model_name in ensemble.MODEL_NAMES:
+                model_dir = root / "models" / ensemble.TASK / model_name
+                model_dir.mkdir(parents=True)
+                (model_dir / "validated.json").write_text(
+                    json.dumps(
+                        {
+                            "meta": {
+                                "task": ensemble.TASK,
+                                "model": model_name,
+                                "seed": ensemble.SEED,
+                                "split_sha256": fingerprint,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            output_dir = root / ensemble.DEFAULT_OUTPUT_RELATIVE
+            output_dir.mkdir(parents=True)
+            for name in ensemble.REUSE_REQUIRED_OUTPUTS:
+                (output_dir / name).write_text("", encoding="utf-8")
+            report = {
+                "task": ensemble.TASK,
+                "reproducibility": {
+                    "stored_project_split_sha256": fingerprint,
+                },
+            }
+            (output_dir / "ensemble_report.json").write_text(
+                json.dumps(report),
+                encoding="utf-8",
+            )
+            reused = ensemble._reuse_completed_evaluation(root, output_dir)
+            self.assertEqual(reused, report)
+
+            changed = "f" * 64
+            (audit_dir / "data_audit.json").write_text(
+                json.dumps({ensemble.TASK: {"split_sha256": changed}}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "different dataset fingerprint"):
+                ensemble._reuse_completed_evaluation(root, output_dir)
 
 
 if __name__ == "__main__":

@@ -384,22 +384,37 @@ def load_task(task,root,offense_source='mc',hasoc_train='',hasoc_test='',
 def prepare(root,tasks=('sentiment','cyberbullying7'),offense_source='mc',hasoc_train='',hasoc_test='',
             mc_label_map=None,mc_text_column=None,mc_label_column=None):
     root=output_paths(root);all_data={};report={}
+    audit_file=root/'results'/'data_audit.json'
+    previous=json.loads(audit_file.read_text(encoding='utf8')) if audit_file.exists() else {}
     for task in tasks:
         frames,source,audit=load_task(task,root,offense_source,hasoc_train,hasoc_test,
                                      mc_label_map,mc_text_column,mc_label_column)
+        candidate_fingerprint=fingerprint(frames)
+        previous_task=previous.get(task,{})
+        previous_fingerprint=previous_task.get('split_sha256')
+        if previous_fingerprint and previous_fingerprint!=candidate_fingerprint:
+            raise RuntimeError(f'{task}: regenerated split differs from the saved data audit. '
+                'Refusing to replace existing splits; restore the original source or use a new ROOT.')
+        model_root=root/'models'/task
+        if model_root.exists():
+            metadata_paths=set(model_root.rglob('meta.json'))|set(model_root.rglob('validated.json'))
+            for metadata_path in sorted(metadata_paths):
+                stored=json.loads(metadata_path.read_text(encoding='utf8'))
+                metadata=stored.get('meta',stored)
+                saved_fingerprint=metadata.get('split_sha256')
+                if saved_fingerprint and saved_fingerprint!=candidate_fingerprint:
+                    raise RuntimeError(f'{task}: regenerated split fingerprint differs from trained '
+                        f'model metadata in {metadata_path}. Refusing to write data over model artifacts.')
         # Do not overwrite frozen splits if a previous experiment used a different source.
         existing={split:root/'data'/f'{task}_{split}.csv' for split in ['train','val','test']}
         if all(p.exists() for p in existing.values()):
             prev=load_prepared(root,[task])[task]
-            if fingerprint(prev)!=fingerprint(frames):
-                if any((root/'models'/task).rglob('validated.json')):
-                    raise RuntimeError(f'{task}: prepared dataset differs from a trained experiment. '
-                        'Start with a NEW ROOT; refusing to mix old models and new splits.')
+            if fingerprint(prev)!=candidate_fingerprint:
+                raise RuntimeError(f'{task}: prepared splits differ from the selected source. '
+                    'Refusing to overwrite existing data; use a new ROOT for a new study.')
         for split,d in frames.items():d.to_csv(existing[split],index=False)
         all_data[task]=frames
-        report[task]={'source':source,'split_sha256':fingerprint(frames),'splits':audit}
-    audit_file=root/'results'/'data_audit.json'
-    previous=json.loads(audit_file.read_text(encoding='utf8')) if audit_file.exists() else {}
+        report[task]={'source':source,'split_sha256':candidate_fingerprint,'splits':audit}
     previous.update(report)
     audit_file.write_text(json.dumps(previous,indent=2,ensure_ascii=False),encoding='utf8')
     return all_data,report
@@ -689,6 +704,17 @@ def fit_one(root,frames,task,name,seed=SEED,epochs_lstm=8,epochs_hf=3,max_len=12
     _check_existing(path,meta)
     done=path/'validated.json';device=_device()
     if done.exists():
+        required=[done,path/'validation_probabilities.npz']
+        if name.startswith('tfidf'):
+            required.append(path/'model.joblib')
+        elif name.startswith('bilstm'):
+            required.extend([path/'best.pt',path/'vocab.json'])
+        else:
+            required.append(path/'final'/'config.json')
+        missing=[str(item) for item in required if not item.is_file()]
+        if missing:
+            raise RuntimeError(f'Completed marker exists for {task}/{name}, but required artifacts '
+                f'are missing: {missing}. Refusing to silently retrain or overwrite.')
         record=json.loads(done.read_text(encoding='utf8'))
         print(f'SKIP completed {task}/{name} (val macro-F1={record["metrics"]["macro_f1"]:.4f})')
         return record
